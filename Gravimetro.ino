@@ -21,11 +21,11 @@
 // --- ESTADOS DE LA MÁQUINA ---
 enum State
 {
-  STATE_IDLE,        // Esperando a Iniciar
-  STATE_POSITIONING, // Posicionando el pendulo
-  StATE_SELECTING_ANGLE, // Esperando a que el usuario seleccione el angulo correspondiente y ejecute
-  STATE_CALCULATING, // Soltar el pendulo y calculando g
-  STATE_DISPLAY      // Mostrando resultado en Nextion
+  STATE_IDLE,            // Esperando a Iniciar
+  STATE_POSITIONING,     // Posicionando el pendulo
+  STATE_SELECTING_ANGLE, // Esperando a que el usuario seleccione el angulo correspondiente y ejecute
+  STATE_CALCULATING,     // Soltar el pendulo y calculando g
+  STATE_DISPLAY          // Mostrando resultado en Nextion
 };
 
 State currentState = STATE_IDLE;
@@ -48,20 +48,18 @@ int currentPage = 0;
 
 // --- Variables existentes ---
 // PINES DE CONTROL
-const int PIN_MOTOR_DIR1 = -1;
-const int PIN_MOTOR_DIR2 = -1;
-const int PIN_MOTOR_PWM = -1;
-const int PIN_ELECTROMAGNET = -1;
-const int PIN_ELECTROMAGNET_INV = -1;
+const int PIN_MOTOR_DIR1 = 3;
+const int PIN_MOTOR_DIR2 = 2;
+const int PIN_ELECTROMAGNET = 24;
 
 // PINES DE SENSORES
-const int PIN_SENSOR_IR = 2;
-const int PIN_LIMIT_SWITCH = -1;
+const int PIN_SENSOR_IR = "A0";
+// TODO: Asignar pin del interruptor de límite si es necesario
+// const int PIN_LIMIT_SWITCH = -1;
 
 // PARÁMETROS DE ENTRADA
 int selectedAngle = 5;
-int selectedPeriods = 10;
-bool startMeasurement = false;
+// int selectedPeriods = 10;
 
 // CONSTANTE FÍSICA
 const double L_eq = -1.0;
@@ -91,6 +89,9 @@ void selectAngleAndAdvance(int angle);
 void set_grav_nextion(float valor);
 void sendNextionEnd();
 void goto_next_page();
+void find_pendulm();
+void move_motor();
+void center_motor();
 
 void setup()
 {
@@ -138,7 +139,7 @@ void loop()
   switch (currentState)
   {
   case STATE_POSITIONING:
-    currentState = STATE_CALCULATING;
+    currentState = STATE_SELECTING_ANGLE;
     break;
 
   case STATE_CALCULATING:
