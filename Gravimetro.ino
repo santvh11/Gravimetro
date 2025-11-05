@@ -23,6 +23,7 @@ enum State
 {
   STATE_IDLE,        // Esperando a Iniciar
   STATE_POSITIONING, // Posicionando el pendulo
+  StATE_SELECTING_ANGLE, // Esperando a que el usuario seleccione el angulo correspondiente y ejecute
   STATE_CALCULATING, // Soltar el pendulo y calculando g
   STATE_DISPLAY      // Mostrando resultado en Nextion
 };
@@ -89,7 +90,7 @@ KbdRptParser Prs; // Nuestra instancia del parser
 void selectAngleAndAdvance(int angle);
 void set_grav_nextion(float valor);
 void sendNextionEnd();
-void avanzar_pagina();
+void goto_next_page();
 
 void setup()
 {
@@ -163,16 +164,16 @@ void KbdRptParser::OnKeyDown(uint8_t mod, uint8_t key)
       currentState = STATE_CALCULATING;
       break;
 
-    case STATE_POSITIONING:
+    case STATE_SELECTING_ANGLE:
       if (currentPage == 3)
       {
-        avanzar_pagina();
+        goto_next_page();
       }
 
       break;
 
     case STATE_DISPLAY:
-      avanzar_pagina();
+      goto_next_page();
       currentState = STATE_IDLE;
       break;
     }
@@ -200,7 +201,7 @@ void KbdRptParser::OnKeyDown(uint8_t mod, uint8_t key)
     default:
       Serial.println("currentPage:");
       Serial.println(currentPage);
-      Serial.println("Presione A, S o D para seleccionar el ángulo.");
+      Serial.println("Error: Presione A, S o D para seleccionar el ángulo.");
       break;
     }
     return;
@@ -223,9 +224,7 @@ void selectAngleAndAdvance(int angle)
   // 3. Actualizar la UI de Nextion
   function_UpdateNextionUI_Angle(selectedAngle);
 
-  // 4. Forzar avance a la siguiente página
-  currentPage = 3;
-  nextionSerial.print("page 3");
+  goto_next_page();
   sendNextionEnd();
 }
 
@@ -248,7 +247,7 @@ void set_grav_nextion(float valor)
   sendNextionEnd();
 }
 
-void avanzar_pagina()
+void goto_next_page()
 {
   Serial.println("Teclado: Barra espaciadora (Cambiando página)");
 
@@ -288,4 +287,17 @@ void function_UpdateNextionUI_Angle(int angle)
   Serial.println(angle);
   // ej. nextionSerial.print("page2.t_angulo.txt=\""); ...
   // sendNextionEnd();
+}
+
+void find_pendulm()
+{
+  move_motor();
+}
+
+void move_motor()
+{
+}
+
+void center_motor()
+{
 }
