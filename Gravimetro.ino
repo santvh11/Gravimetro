@@ -8,33 +8,31 @@
 // --- LIBRERÍAS DEL USB HOST SHIELD ---
 #include <hidboot.h>
 #include <usbhub.h> // Añadido para robustez
-#include <SPI.h>     // Añadido (requerido por el Host Shield)
+#include <SPI.h>    // Añadido (requerido por el Host Shield)
 
 // --- LIBRERÍAS EXISTENTES ---
 #include <math.h> // Para cálculos (pow, PI)
 // #include "Nextion.h" // No la usamos, comunicación directa
 
-// --- NUEVO: DEFINICIONES DE NEXTION (del código combinado) ---
+// --- DEFINICIONES DE NEXTION  ---
 #define nextionSerial Serial3 // Usamos Serial3 (Pines 14 y 15)
 #define NEXTION_BAUD 9600     // Velocidad confirmada: 9600
 
-// --- 1. ESTADOS DE LA MÁQUINA (Sin cambios) ---
-enum State {
-  STATE_IDLE,      // Esperando órdenes
-  STATE_HOMING,    // Calibrando posición del mecanismo
-  STATE_POSITIONING, // Moviendo el péndulo al ángulo deseado
-  STATE_RELEASE,     // Soltando el péndulo
-  STATE_MEASURING,   // Midiendo el periodo (esperando a la ISR)
-  STATE_CALCULATING, // Calculando g
+// --- ESTADOS DE LA MÁQUINA ---
+enum State
+{
+  STATE_IDLE,        // Esperando a Iniciar
+  STATE_POSITIONING, // Posicionando el pendulo
+  STATE_CALCULATING, // Soltar el pendulo y calculando g
   STATE_DISPLAY      // Mostrando resultado en Nextion
 };
+
 State currentState = STATE_IDLE;
 
-
-// --- 2. VARIABLES GLOBALES Y PINES ---
+// --- VARIABLES GLOBALES Y PINES ---
 
 // --- OBJETOS DEL USB HOST (Método de Clase) ---
-USB     Usb;
+USB Usb;
 HIDBoot<USB_HID_PROTOCOL_KEYBOARD> kbd(&Usb); // Driver para Teclado
 
 // --- Variables de control de página Nextion ---
@@ -47,7 +45,7 @@ int currentPage = 0;
 #define KEY_S 0x16     // Tecla 'S'
 #define KEY_D 0x07     // Tecla 'D'
 
-// --- Variables existentes (Sin cambios) ---
+// --- Variables existentes ---
 // PINES DE CONTROL
 const int PIN_MOTOR_DIR1 = -1;
 const int PIN_MOTOR_DIR2 = -1;
@@ -78,36 +76,28 @@ double T_medido = 0.0;
 double T_0 = 0.0;
 double g_calculado = 0.0;
 
-// --- NUEVO: CLASE PARSER DEL TECLADO (Método robusto) ---
 class KbdRptParser : public KeyboardReportParser
 {
-  protected:
-    // Se llama cuando una tecla es presionada
-    void OnKeyDown(uint8_t mod, uint8_t key);
+protected:
+  // Se llama cuando una tecla es presionada
+  void OnKeyDown(uint8_t mod, uint8_t key);
 };
 
 KbdRptParser Prs; // Nuestra instancia del parser
 
-// --- NUEVO: FUNCIÓN HELPER DE NEXTION ---
-/**
- * @brief Envía el comando de terminación a la pantalla Nextion.
- */
-void sendNextionEnd() {
-  nextionSerial.write(0xFF);
-  nextionSerial.write(0xFF);
-  nextionSerial.write(0xFF);
-  // Pequeña pausa para que Nextion procese el comando
-  delay(50);
-}
+// --- PROTOTIPOS
+void selectAngleAndAdvance(int angle);
+void set_grav_nextion(float valor);
+void sendNextionEnd();
+void avanzar_pagina();
 
-
-// --- 3. CONFIGURACIÓN INICIAL (SETUP) ---
-
-void setup() {
+void setup()
+{
   // 1. Iniciar monitor de PC
   Serial.begin(115200);
-  while (!Serial);
-  Serial.println("--- Inicio de Setup (Gravímetro Integrado) ---");
+  while (!Serial)
+    ;
+  Serial.println("--- Inicio de Setup ---");
 
   // 2. Iniciar puerto para Nextion
   Serial.print("Iniciando Serial3 para Nextion a ");
@@ -119,15 +109,16 @@ void setup() {
   sendNextionEnd();
   Serial.println("Comando 'page 0' enviado.");
 
-  // 3. Configurar pines del gravímetro (Sin cambios)
+  // 3. Configurar pines del gravímetro
   pinMode(PIN_MOTOR_DIR1, OUTPUT);
-  // ... (etc.)
 
   // 4. INICIALIZACIÓN DEL USB HOST SHIELD
   Serial.println("Iniciando USB Host Shield...");
-  if (Usb.Init() == -1) {
+  if (Usb.Init() == -1)
+  {
     Serial.println("Error: No se pudo iniciar el USB Host Shield. Deteniendo.");
-    while (1); // Detener todo si el shield falla
+    while (1)
+      ; // Detener todo si el shield falla
   }
   Serial.println("USB Host listo. Conecte un teclado.");
 
@@ -137,190 +128,164 @@ void setup() {
   Serial.println("Gravímetro listo. En estado IDLE.");
 }
 
-// --- 4. BUCLE PRINCIPAL (LOOP) - LA MÁQUINA DE ESTADOS ---
-
-void loop() {
-
-  // --- TAREA CRÍTICA DEL HOST SHIELD ---
+void loop()
+{
   // Revisa el bus USB y llama a OnKeyDown() si hay una tecla.
   Usb.Task();
 
-  // La máquina de estados FSM (sin cambios)
-  switch (currentState) {
+  // Revisar máquina de estados:
+  switch (currentState)
+  {
+  case STATE_POSITIONING:
+    currentState = STATE_CALCULATING;
+    break;
 
-    // --- ESTADO 1: REPOSO ---
-    case STATE_IDLE:
-      // 1. Escuchar a la Nextion (como antes)
-      checkNextionCommands();
+  case STATE_CALCULATING:
+    currentState = STATE_DISPLAY;
+    break;
 
-      // 2. Escuchar al Teclado (manejado automáticamente por Usb.Task())
-      //    Ambas funciones pueden poner 'startMeasurement = true'
-
-      if (startMeasurement) {
-        startMeasurement = false; // Resetea el flag
-        Serial.println("Comando 'Start' recibido. Pasando a HOMING.");
-        currentState = STATE_HOMING;
-      }
-      break;
-
-    // --- (El resto de estados: HOMING, POSITIONING, RELEASE, MEASURING, ---
-    // --- CALCULATING, DISPLAY... son EXACTAMENTE IGUALES) ---
-
-    case STATE_HOMING:
-      // ... (código idéntico) ...
-      currentState = STATE_POSITIONING;
-      break;
-
-    case STATE_POSITIONING:
-      // ... (código idéntico) ...
-      currentState = STATE_RELEASE;
-      break;
-
-    case STATE_RELEASE:
-      // ... (código idéntico) ...
-      currentState = STATE_MEASURING;
-      break;
-
-    case STATE_MEASURING:
-      // ... (código idéntico) ...
-      if (endTime > 0) {
-        currentState = STATE_CALCULATING;
-      }
-      break;
-
-    case STATE_CALCULATING:
-      // ... (código idéntico) ...
-      currentState = STATE_DISPLAY;
-      break;
-
-    case STATE_DISPLAY:
-      // ... (código idéntico) ...
-      currentState = STATE_IDLE;
-      break;
+  case STATE_DISPLAY:
+    currentState = STATE_IDLE;
+    break;
   }
 }
 
-// --- 5. RUTINA DE SERVICIO DE INTERRUPCIÓN (ISR) ---
-// (Sin cambios)
-void sensorISR() {
-  // ... (código idéntico) ...
-}
-
-// --- 6. FUNCIÓN OnKeyDown (Lógica de Teclado Centralizada) ---
+// --- FUNCIÓN OnKeyDown (Lógica de Teclado Centralizada) ---
 // Esta función es llamada automáticamente por "Usb.Task()"
-void KbdRptParser::OnKeyDown(uint8_t mod, uint8_t key) {
+void KbdRptParser::OnKeyDown(uint8_t mod, uint8_t key)
+{
+  // Logica para la tecla principal
+  if (key == KEY_SPACE) // 0x2C
+  {
+    switch (currentState)
+    {
+    case STATE_IDLE:
+      currentState = STATE_CALCULATING;
+      break;
 
-  // IMPORTANTE: Solo procesamos teclas si estamos en IDLE
-  if (currentState != STATE_IDLE) {
+    case STATE_POSITIONING:
+      if (currentPage == 3)
+      {
+        avanzar_pagina();
+      }
+
+      break;
+
+    case STATE_DISPLAY:
+      avanzar_pagina();
+      currentState = STATE_IDLE;
+      break;
+    }
+
     return;
   }
 
   // --- LÓGICA ESPECIAL PARA PÁGINA 2 ---
-  if (currentPage == 2) {
-    switch (key) {
-      case KEY_A: // Tecla 'A'
-        Serial.println("Teclado: Ángulo seleccionado: 10");
-        selectedAngle = 10;
-        function_UpdateNextionUI_Angle(selectedAngle); // Actualiza la UI
-        
-        // Forzar avance a la siguiente página
-        currentPage = 3; 
-        nextionSerial.print("page 3");
-        sendNextionEnd();
-        break;
-
-      case KEY_S: // Tecla 'S'
-        Serial.println("Teclado: Ángulo seleccionado: 15");
-        selectedAngle = 15;
-        function_UpdateNextionUI_Angle(selectedAngle); // Actualiza la UI
-        
-        // Forzar avance a la siguiente página
-        currentPage = 3;
-        nextionSerial.print("page 3");
-        sendNextionEnd();
-        break;
-
-      case KEY_D: // Tecla 'D'
-        Serial.println("Teclado: Ángulo seleccionado: 20");
-        selectedAngle = 20;
-        function_UpdateNextionUI_Angle(selectedAngle); // Actualiza la UI
-        
-        // Forzar avance a la siguiente página
-        currentPage = 3;
-        nextionSerial.print("page 3");
-        sendNextionEnd();
-        break;
-      
-      default:
-        // Ignorar cualquier otra tecla (incluyendo ESPACIO)
-        Serial.println("currentPage:");
-        Serial.println(currentPage);
-        Serial.println("Presione A, S o D para seleccionar el ángulo.");
-        break;
-    }
-    return; // Importante: Salir de la función aquí
-  }
-
-  // --- LÓGICA NORMAL (Para todas las demás páginas) ---
-  switch (key) {
-    // --- Lógica de Navegación Nextion ---
-    case KEY_SPACE: // 0x2C
-    if (currentPage != 2) {
-      Serial.println("Teclado: Barra espaciadora (Cambiando página)");
-
-      // 1. Avanza a la siguiente página
-      currentPage++;
-      if (currentPage >= TOTAL_PAGES) {
-        currentPage = 0;
-      }
-      
-      // 3. Envía el comando a la Nextion
-      Serial.print("Enviando 'page ");
-      Serial.print(currentPage);
-      Serial.println("' a Nextion...");
-
-      nextionSerial.print("page ");
-      nextionSerial.print(currentPage);
-      sendNextionEnd(); // Envía el terminador
-
-      Serial.println("Comando enviado.");
-      }
+  if (currentPage == 2)
+  {
+    switch (key)
+    {
+    case KEY_A:
+      selectAngleAndAdvance(10);
       break;
+
+    case KEY_S:
+      selectAngleAndAdvance(15);
+      break;
+
+    case KEY_D:
+      selectAngleAndAdvance(20);
+      break;
+
+    default:
+      Serial.println("currentPage:");
+      Serial.println(currentPage);
+      Serial.println("Presione A, S o D para seleccionar el ángulo.");
+      break;
+    }
+    return;
   }
 }
 
+/**
+ * @brief Selecciona un ángulo, actualiza la UI y avanza a la página 3.
+ * @param angle El ángulo (10, 15, o 20) que fue seleccionado.
+ */
+void selectAngleAndAdvance(int angle)
+{
+  // 1. Imprimir en el Serial Monitor
+  Serial.print("Teclado: Ángulo seleccionado: ");
+  Serial.println(angle);
 
-// --- 7. FUNCIONES "PLACEHOLDER" (Sin cambios) ---
+  // 2. Asignar el ángulo a la variable global
+  selectedAngle = angle;
 
-void checkNextionCommands() {
-  // ... (código idéntico para leer de la Nextion) ...
+  // 3. Actualizar la UI de Nextion
+  function_UpdateNextionUI_Angle(selectedAngle);
+
+  // 4. Forzar avance a la siguiente página
+  currentPage = 3;
+  nextionSerial.print("page 3");
+  sendNextionEnd();
 }
 
-void function_HomingMotor(int limitSwitchPin) {
-  // ... (código idéntico) ...
+/**
+ * @brief Actualiza el texto de un objeto en la pantalla Nextion con un valor de gravedad formateado.
+ * @param valor El valor flotante (ej. gravedad) que se mostrará en la pantalla.
+ */
+void set_grav_nextion(float valor)
+{
+  // 1. Crear el texto formateado
+  // Convierte el float a String con 2 decimales y agrega "g="
+  String texto_a_enviar = "g=" + String(valor, 2);
+
+  // 2. Iniciar el comando para el objeto 'result' en la pantalla Nextion
+  Serial3.print("result.txt=\"");
+
+  // 3. Enviar el texto formateado
+  Serial3.print(texto_a_enviar);
+
+  sendNextionEnd();
 }
 
-void function_MoveToAngle(int angle) {
-  // ... (código idéntico) ...
+void avanzar_pagina()
+{
+  Serial.println("Teclado: Barra espaciadora (Cambiando página)");
+
+  // 1. Avanza a la siguiente página
+  currentPage++;
+  if (currentPage >= TOTAL_PAGES)
+  {
+    currentPage = 0;
+  }
+
+  // 3. Envía el comando a la Nextion
+  Serial.print("Enviando 'page ");
+  Serial.print(currentPage);
+  Serial.println("' a Nextion...");
+
+  nextionSerial.print("page ");
+  nextionSerial.print(currentPage);
+  sendNextionEnd();
+
+  Serial.println("Comando enviado.");
 }
 
-void function_RetractMotor() {
-  // ... (código idéntico) ...
+void sendNextionEnd()
+{
+  nextionSerial.write(0xFF);
+  nextionSerial.write(0xFF);
+  nextionSerial.write(0xFF);
+  // Pequeña pausa para que Nextion procese el comando
+  delay(50);
 }
 
-void function_SendToNextion(double g_value) {
-  // ... (código idéntico) ...
-}
-
-void function_UpdateNextionUI_Angle(int angle) {
+void function_UpdateNextionUI_Angle(int angle)
+{
   // Esta función es necesaria para que si el teclado cambia
   // el ángulo, la pantalla Nextion lo refleje.
   Serial.print("UI Debería actualizarse a ángulo: ");
   Serial.println(angle);
   // ej. nextionSerial.print("page2.t_angulo.txt=\""); ...
   // sendNextionEnd();
-}
-
-void function_UpdateNextionUI_Periods(int periods) {
-  // Idem para el número de periodos
 }
