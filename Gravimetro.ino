@@ -68,7 +68,12 @@ const int PIN_SENSOR_IR = A0;
 // --- e.  Constantes medición ---
 const int NUM_PERIODS_TO_MEASURE = 10; // Número de oscilaciones a promediar
 const double G_STANDARD = 9.80665;     // Gravedad estándar m/s^2 (para cálculo ideal)
-const double PENDULUM_LENGTH_METERS = 0.27;
+// Longitud Equivalente 'L_eq' calculada desde SolidWorks
+// L_eq = I_pivote / (masa * dist_centro_de_masa)
+// L_eq = 2501806.24 g·mm^2 / (158.05 g * 104.06 mm) = 152.12 mm
+const double PENDULUM_LENGTH_METERS = 0.15212;
+
+// TODO: ¡CALIBRACIÓN #1 CRÍTICA!
 int SENSOR_THRESHOLD = 500; // UMBRAL de detección del sensor IR
 
 // --- f. Variables de medición ---
