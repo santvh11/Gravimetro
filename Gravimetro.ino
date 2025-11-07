@@ -74,7 +74,7 @@ const double G_STANDARD = 9.80665;     // Gravedad estándar m/s^2 (para cálcul
 // L_eq = 4684350.95 g·mm^2 / (225.46 g * 119.96 mm) = 173.2 mm
 const double PENDULUM_LENGTH_METERS = 0.1732;
 
-int SENSOR_THRESHOLD = 500; // UMBRAL de detección del sensor IR
+int SENSOR_THRESHOLD = 535; // UMBRAL de detección del sensor IR
 
 // --- f. Variables de medición ---
 int selectedAngle = 15; // Ángulo por defecto
