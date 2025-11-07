@@ -74,7 +74,9 @@ const double G_STANDARD = 9.80665;     // Gravedad estándar m/s^2 (para cálcul
 // L_eq = 4684350.95 g·mm^2 / (225.46 g * 119.96 mm) = 173.2 mm
 const double PENDULUM_LENGTH_METERS = 0.1732;
 
-int SENSOR_THRESHOLD = 535; // UMBRAL de detección del sensor IR
+// UMBRAL de detección del sensor IR
+// Reposo (despejado) = > 535. Activo (bloqueado) = < 535.
+int SENSOR_THRESHOLD = 535;
 
 // --- f. Variables de medición ---
 int selectedAngle = 15; // Ángulo por defecto
@@ -313,7 +315,6 @@ void selectAngleAndAdvance(int angle)
 void set_grav_nextion(float g)
 {
   String cmd;
-
   cmd = "result.txt=\"" + String(g, 4) + " m/s2\"";
   nextionSerial.print(cmd);
   sendNextionEnd();
@@ -433,13 +434,6 @@ double perform_pendulum_measurement()
   Serial.println("Verificando sensor...");
   unsigned long wait_start = millis();
 
-  // -----------------------------------------------------------------
-  // ¡LÓGICA DE SENSOR! (Asume ACTIVO-BAJO)
-  // Reposo (despejado) = analogRead > THRESHOLD
-  // Activo (bloqueado) = analogRead < THRESHOLD
-  // ¡Si tu sensor es ACTIVO-ALTO, invierte < y > en esta función!
-  // -----------------------------------------------------------------
-
   // Esperar a que el valor sea ALTO (despejado)
   while (analogRead(PIN_SENSOR_IR) < SENSOR_THRESHOLD)
   {
@@ -449,6 +443,7 @@ double perform_pendulum_measurement()
       return 0.0;
     }
   }
+
   Serial.println("Sensor despejado.");
   sensor_state = false; // Está despejado (FUERA)
 
