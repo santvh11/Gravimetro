@@ -9,11 +9,19 @@
 #include <SPI.h> // Requerido por el Host Shield
 
 // --- OTRAS LIBRERÍAS ---
-#include <math.h>
+#include <math.h> // Para M_PI y pow()
 
 // --- DEFINICIONES DE NEXTION  ---
 #define nextionSerial Serial3 // Usamos Serial3 (Pines 14 y 15)
 #define NEXTION_BAUD 9600     // Velocidad confirmada: 9600
+
+// --- DEFINICIONES DE PÁGINAS (Mejora de legibilidad) ---
+#define PAGE_HOME 0           // Página inicial
+#define PAGE_POSITIONING 1    // Página "Posicionando..."
+#define PAGE_SELECT_ANGLE 2   // Página de selección de ángulo
+#define PAGE_READY 3          // Página "Listo para soltar"
+#define PAGE_CALCULATING 4    // Página "Calculando..."
+#define PAGE_DISPLAY_RESULT 5 // Página de resultados
 
 // --- ESTADOS DE LA MÁQUINA ---
 enum State
@@ -26,6 +34,7 @@ enum State
 };
 
 State currentState = STATE_IDLE;
+State lastState = STATE_IDLE; // Variable para evitar "spam" en el Serial Monitor
 
 // --- Definiciones de control del motor ---
 enum MotorDirection
@@ -35,7 +44,7 @@ enum MotorDirection
   MOTOR_REVERSE
 };
 
-// --- VARIABLES GLOBALES Y PINES ---
+// --- VARIABLES GLOBALES Y PPINES ---
 
 // --- a. Obj del host USB ---
 USB Usb;
@@ -56,29 +65,22 @@ const int PIN_MOTOR_DIR1 = 3;
 const int PIN_MOTOR_DIR2 = 2;
 const int PIN_ELECTROMAGNET = 24;
 const int PIN_SENSOR_IR = A0;
-// TODO: Ver si es necesario y asignar pin del interruptor de límite
-// const int PIN_LIMIT_SWITCH = A1; // Podrías usar A1 y A2 para los sensores azules
-// const int PIN_LIMIT_SWITCH_2 = A2;
 
 // --- e.  Constantes medición ---
-const int NUM_PERIODS_TO_MEASURE = 10; // Número de oscilaciones a promediar
-const double L_eq = -1.0;
-// TODO: Ajustar
-const double PENDULUM_LENGTH_METERS = 1.0; // AJUSTAR medida (metros)
-// TODO: Calibrar
-int SENSOR_THRESHOLD = 500; // UMBRAL de detección del sensor IR (CALIBRAR)
+const int NUM_PERIODS_TO_MEASURE = 10;      // Número de oscilaciones a promediar
+const double G_STANDARD = 9.80665;          // Gravedad estándar m/s^2 (para cálculo ideal)
+const double PENDULUM_LENGTH_METERS = 0.27; // ¡ACTUALIZADO con tu valor!
+// TODO: ¡CALIBRAR!
+int SENSOR_THRESHOLD = 500; // UMBRAL de detección del sensor IR
 
 // --- f. Variables de medición ---
-int selectedAngle = 5;
-volatile unsigned long startTime = 0;
-volatile unsigned long endTime = 0;
-volatile int stepCount = 0;
-int pasos_objetivo = 0;
+int selectedAngle = 15; // Ángulo por defecto
 
 // --- g. Variables de cálculo ---
-double T_medido = 0.0;
-double T_0 = 0.0;
-double g_calculado = 0.0;
+double T_medido = 0.0;    // Período real medido (T)
+double T_0_ideal = 0.0;   // Período ideal (T_0) (para ángulo pequeño)
+double T_esperado = 0.0;  // Período teórico esperado para el ángulo grande
+double g_calculado = 0.0; // Gravedad 'g' calculada
 
 class KbdRptParser : public KeyboardReportParser
 {
@@ -89,34 +91,38 @@ protected:
 
 KbdRptParser Prs; // Nuestra instancia del parser
 
-// --- PROTOTIPOS
+// --- PROTOTIPOS ---
 void selectAngleAndAdvance(int angle);
-void set_grav_nextion(float valor);
+void set_grav_nextion(float g, float T_real, float T_esperado, float T_ideal_T0);
 void sendNextionEnd();
 void goto_next_page();
 void find_pendulm();
 void move_motor(int direction);
 void center_motor();
 void function_UpdateNextionUI_Angle(int angle);
-double perform_measurement();
+double perform_pendulum_measurement();
 void position_at_angle(int angle);
+double calculate_T0_small_angle(double length_m, double gravity_m_s2);
+double calculate_large_angle_correction(int angle_deg);
 
+// --- CONFIGURACIÓN ---
 void setup()
 {
   // 1. Iniciar monitor de PC
   Serial.begin(115200);
   while (!Serial)
     ;
-  Serial.println("--- Inicio de Setup ---");
+  Serial.println("--- Inicio de Setup (v6 - Ángulo Grande) ---");
 
   // 2. Iniciar puerto para Nextion
   Serial.print("Iniciando Serial3 para Nextion a ");
   Serial.println(NEXTION_BAUD);
   nextionSerial.begin(NEXTION_BAUD);
-  delay(1000); // Dar tiempo a la Nextion para que arranque
+  delay(1000);
   Serial.println("Enviando 'page 0' a Nextion...");
   nextionSerial.print("page 0");
   sendNextionEnd();
+  currentPage = PAGE_HOME;
   Serial.println("Comando 'page 0' enviado.");
 
   // 3. Configurar pines del gravímetro
@@ -126,8 +132,8 @@ void setup()
   pinMode(PIN_SENSOR_IR, INPUT);
 
   // 4. Asegurarse que todo esté apagado al inicio
-  move_motor(MOTOR_STOP);               // Motor en estado STOP por seguridad
-  digitalWrite(PIN_ELECTROMAGNET, LOW); // Electroimán apagado
+  move_motor(MOTOR_STOP);
+  digitalWrite(PIN_ELECTROMAGNET, LOW);
 
   // 5. Inizializar USB Host Shield
   Serial.println("Iniciando USB Host Shield...");
@@ -145,182 +151,184 @@ void setup()
   Serial.println("Gravímetro listo. En estado IDLE.");
 }
 
+// --- BUCLE PRINCIPAL ---
 void loop()
 {
-  // Revisa el bus USB y llama a OnKeyDown() si hay una tecla.
   Usb.Task();
+
+  if (currentState != lastState)
+  {
+    Serial.print("Cambiando de estado: ");
+    Serial.print(lastState);
+    Serial.print(" -> ");
+    Serial.println(currentState);
+    lastState = currentState;
+  }
 
   // Revisar máquina de estados:
   switch (currentState)
   {
   case STATE_IDLE:
-    Serial.println("Estado: IDLE (Esperando inicio)...");
-    // Esperar... (la lógica del teclado cambia el estado)
     break;
 
   case STATE_POSITIONING:
-    Serial.println("Estado: Posicionando...");
-    // 1. Buscar el pendulo moviendo el electroimán de un extremo al otro
     find_pendulm();
-
-    // 2. Centrarlo
     center_motor();
-
-    // 3. Cuando termine, cambiar de estado
     Serial.println("Posicionamiento completado.");
-    currentState = STATE_SELECTING_ANGLE;
     goto_next_page(); // Ir a la página de selección de ángulo
+    currentState = STATE_SELECTING_ANGLE;
     break;
 
   case STATE_SELECTING_ANGLE:
-    Serial.println("Estado: Seleccionando ángulo...");
-    // Esperar... (la lógica del teclado cambia el estado)
     break;
 
   case STATE_CALCULATING:
-    Serial.println("Estado: Calculando...");
-
     // 1. Mover el péndulo a la posición del ángulo seleccionado
-    //    (Esto asume que el electroimán ya está encendido desde STATE_IDLE)
     position_at_angle(selectedAngle);
 
-    // 2. Realizar la medición (soltar, medir periodos, calcular g)
-    g_calculado = perform_measurement();
+    // 2. Realizar la medición (soltar, medir periodos)
+    T_medido = perform_pendulum_measurement();
 
-    // 3. Enviar el resultado a la pantalla Nextion
-    set_grav_nextion(g_calculado);
+    if (T_medido > 0.0) // Si la medición fue exitosa
+    {
+      // 3. Calcular el factor de corrección para el ángulo usado
+      double correction_factor = calculate_large_angle_correction(selectedAngle);
+
+      // 4. Calcular 'g' USANDO LA FÓRMULA EXACTA
+      g_calculado = (4.0 * M_PI * M_PI * PENDULUM_LENGTH_METERS * pow(correction_factor, 2)) / (T_medido * T_medido);
+
+      // 5. Calcular valores teóricos para comparar
+      T_0_ideal = calculate_T0_small_angle(PENDULUM_LENGTH_METERS, G_STANDARD);
+      T_esperado = T_0_ideal * correction_factor; // El período que esperábamos medir
+
+      // 6. Enviar todos los resultados a la pantalla Nextion
+      set_grav_nextion(g_calculado, T_medido, T_esperado, T_0_ideal);
+    }
+    else
+    {
+      // Hubo un error en la medición (timeout)
+      Serial.println("Error de medición. Enviando 0.0 a Nextion.");
+      set_grav_nextion(0.0, 0.0, 0.0, 0.0);
+    }
+
     currentState = STATE_DISPLAY;
+    break;
 
   case STATE_DISPLAY:
-    Serial.println("Estado: Mostrando resultado...");
-    // ... Lógica para mostrar g_calculado en Nextion ...
-    // Esperar... (la lógica del teclado cambia el estado)
     break;
   }
+  delay(5);
 }
 
-// --- FUNCIÓN OnKeyDown (Lógica de Teclado Centralizada) ---
-// Esta función es llamada automáticamente por "Usb.Task()"
+// --- LÓGICA DEL TECLADO ---
 void KbdRptParser::OnKeyDown(uint8_t mod, uint8_t key)
 {
-  // Logica para la tecla principal
-  if (key == KEY_SPACE) // 0x2C
+  if (key == KEY_SPACE)
   {
     switch (currentState)
     {
     case STATE_IDLE:
-      // Iniciar el proceso de posicionamiento
       Serial.println("Activando electroimán para posicionar.");
-      digitalWrite(PIN_ELECTROMAGNET, HIGH); // Encender el imán ANTES de posicionar
-      delay(500);                            // Dar tiempo a que el imán se active
+      digitalWrite(PIN_ELECTROMAGNET, HIGH);
+      delay(500);
+      goto_next_page(); // Ir a pág "Posicionando"
       currentState = STATE_POSITIONING;
       break;
 
     case STATE_SELECTING_ANGLE:
-      // Asumimos que el ángulo está seleccionado y queremos calcular
-      if (currentPage == 3) // Si estamos en la página de "listo para soltar"
+      if (currentPage == PAGE_READY)
       {
-        goto_next_page(); // Ir a la pág de "calculando"
+        goto_next_page(); // Ir a la pág "calculando"
         currentState = STATE_CALCULATING;
       }
       break;
 
     case STATE_DISPLAY:
-      goto_next_page(); // Volver a la página 0
+      goto_next_page(); // Volver a la página 0 (HOME)
       currentState = STATE_IDLE;
       break;
     }
-
     return;
   }
 
-  // --- LÓGICA ESPECIAL PARA PÁGINA DE SELECCIÓN DE ANGULO (se asume que es la 2) ---
-  if (currentPage == 2)
+  if (currentPage == PAGE_SELECT_ANGLE)
   {
     switch (key)
     {
     case KEY_A:
+      selectAngleAndAdvance(5);
+      break;
+    case KEY_S:
       selectAngleAndAdvance(10);
       break;
-
-    case KEY_S:
+    case KEY_D:
       selectAngleAndAdvance(15);
       break;
-
-    case KEY_D:
-      selectAngleAndAdvance(20);
-      break;
-
     default:
-      Serial.println("currentPage:");
-      Serial.println(currentPage);
-      Serial.println("Error: Presione A, S o D para seleccionar el ángulo.");
+      Serial.println("Error: Presione A (5), S (10), D (15).");
       break;
     }
     return;
   }
 }
 
-/**
- * @brief Selecciona un ángulo, actualiza la UI y avanza a la página 3.
- * @param angle El ángulo (10, 15, o 20) que fue seleccionado.
- */
+// --- FUNCIONES DE NEXTION ---
 void selectAngleAndAdvance(int angle)
 {
-  // 1. Imprimir en el Serial Monitor
   Serial.print("Teclado: Ángulo seleccionado: ");
   Serial.println(angle);
-
-  // 2. Asignar el ángulo a la variable global
   selectedAngle = angle;
-
-  // 3. Actualizar la UI de Nextion
   function_UpdateNextionUI_Angle(selectedAngle);
-
   goto_next_page(); // Avanza a la página 3 (listo para soltar)
-  // sendNextionEnd(); // goto_next_page ya lo hace
 }
 
 /**
- * @brief Actualiza el texto de un objeto en la pantalla Nextion con un valor de gravedad formateado.
- * @param valor El valor flotante (ej. gravedad) que se mostrará en la pantalla.
+ * @brief Actualiza varios objetos en la pantalla Nextion con los resultados.
+ * @param g El valor de 'g' calculado.
+ * @param T_real El período (T) medido.
+ * @param T_esperado El período teórico esperado para el ángulo grande.
+ * @param T_ideal_T0 El período ideal (T_0) para ángulo pequeño.
  */
-void set_grav_nextion(float valor)
+void set_grav_nextion(float g, float T_real, float T_esperado, float T_ideal_T0)
 {
-  // 1. Crear el texto formateado
-  // Convierte el float a String con 2 decimales y agrega "g="
-  String texto_a_enviar = "g=" + String(valor, 2);
+  String cmd;
 
-  // 2. Iniciar el comando para el objeto 'result' en la pantalla Nextion
-  nextionSerial.print("result.txt=\""); // Usar nextionSerial, no Serial3
-
-  // 3. Enviar el texto formateado
-  nextionSerial.print(texto_a_enviar);
-
+  // 1. Enviar 'g' calculado (ej. a "g_val.txt")
+  cmd = "g_val.txt=\"" + String(g, 4) + " m/s2\"";
+  nextionSerial.print(cmd);
   sendNextionEnd();
+
+  // 2. Enviar Período Real (ej. a "t_real.txt")
+  cmd = "t_real.txt=\"T_med: " + String(T_real, 4) + " s\"";
+  nextionSerial.print(cmd);
+  sendNextionEnd();
+
+  // 3. Enviar Período Esperado (ej. a "t_esp.txt")
+  cmd = "t_esp.txt=\"T_esp: " + String(T_esperado, 4) + " s\"";
+  nextionSerial.print(cmd);
+  sendNextionEnd();
+
+  // 4. Enviar Período Ideal T0 (ej. a "t_ideal.txt")
+  cmd = "t_ideal.txt=\"T_ideal(0): " + String(T_ideal_T0, 4) + " s\"";
+  nextionSerial.print(cmd);
+  sendNextionEnd();
+
+  Serial.println("Resultados enviados a Nextion.");
 }
 
 void goto_next_page()
 {
-  Serial.println("Teclado: Barra espaciadora (Cambiando página)");
-
-  // 1. Avanza a la siguiente página
   currentPage++;
   if (currentPage >= TOTAL_PAGES)
   {
     currentPage = 0;
   }
-
-  // 3. Envía el comando a la Nextion
   Serial.print("Enviando 'page ");
   Serial.print(currentPage);
   Serial.println("' a Nextion...");
-
   nextionSerial.print("page ");
   nextionSerial.print(currentPage);
   sendNextionEnd();
-
-  Serial.println("Comando enviado.");
 }
 
 void sendNextionEnd()
@@ -328,19 +336,18 @@ void sendNextionEnd()
   nextionSerial.write(0xFF);
   nextionSerial.write(0xFF);
   nextionSerial.write(0xFF);
-  // Pequeña pausa para que Nextion procese el comando
-  delay(50);
+  delay(30);
 }
 
 void function_UpdateNextionUI_Angle(int angle)
 {
-  // Esta función es necesaria para que si el teclado cambia
-  // el ángulo, la pantalla Nextion lo refleje.
   Serial.print("UI Debería actualizarse a ángulo: ");
   Serial.println(angle);
   // ej. nextionSerial.print("page2.t_angulo.txt=\""); ...
   // sendNextionEnd();
 }
+
+// --- FUNCIONES DEL MOTOR ---
 
 void find_pendulm()
 {
@@ -353,31 +360,22 @@ void find_pendulm()
   Serial.println("...Péndulo encontrado.");
 }
 
-/**
- * @brief Controla el motor de DC (velocidad constante).
- * @param direction Un valor de MotorDirection (MOTOR_STOP, MOTOR_FORWARD, MOTOR_REVERSE).
- */
 void move_motor(int direction)
 {
   switch (direction)
   {
-  case MOTOR_FORWARD: // Mover en una dirección
+  case MOTOR_FORWARD:
     digitalWrite(PIN_MOTOR_DIR1, HIGH);
     digitalWrite(PIN_MOTOR_DIR2, LOW);
-    Serial.println("Motor: FORWARD");
     break;
-
-  case MOTOR_REVERSE: // Mover en la otra dirección
+  case MOTOR_REVERSE:
     digitalWrite(PIN_MOTOR_DIR1, LOW);
     digitalWrite(PIN_MOTOR_DIR2, HIGH);
-    Serial.println("Motor: REVERSE");
     break;
-
-  case MOTOR_STOP: // Detener (frenar)
+  case MOTOR_STOP:
   default:
     digitalWrite(PIN_MOTOR_DIR1, LOW);
     digitalWrite(PIN_MOTOR_DIR2, LOW);
-    Serial.println("Motor: STOP");
     break;
   }
 }
@@ -385,121 +383,48 @@ void move_motor(int direction)
 void center_motor()
 {
   // --- LÓGICA DE EJEMPLO ---
-  // Moverse a la posición central o al otro extremo.
-  // REEMPLAZA esto con tu lógica de sensores.
   Serial.println("Centrando motor (ej. moviendo REVERSE 2 seg)...");
   move_motor(MOTOR_REVERSE);
+  // TODO: Reemplazar esto con lógica de sensores o tiempo calibrado
   delay(2000); // Ejemplo: moverse 2 segundos
   move_motor(MOTOR_STOP);
   Serial.println("...Motor centrado (supuestamente).");
 }
 
-/**
- * @brief Realiza la medición de caída libre.
- * @return El valor de 'g' calculado en m/s^2.
- */
-double perform_measurement()
-{
-  unsigned long time_ms;
-  double time_s;
-  double g_result;
-
-  Serial.println("--- Iniciando Medición de Gravedad ---");
-
-  // 1. Esperar a que el sensor esté despejado
-  //    Esto previene una falsa lectura si la esfera ya estaba sobre el sensor.
-  Serial.println("Verificando sensor...");
-  time_ms = millis();
-  while (analogRead(PIN_SENSOR_IR) > SENSOR_THRESHOLD)
-  {
-    // Si la esfera no se quita en 5s, abortar.
-    if (millis() - time_ms > 5000)
-    {
-      Serial.println("Error: Sensor bloqueado. Abortando.");
-      return 0.0; // Retorna 0 como error
-    }
-  }
-
-  Serial.println("Sensor despejado. Listo para soltar.");
-  delay(100); // Pequeña pausa
-
-  // 2. Soltar la esfera y tomar el tiempo inicial
-  digitalWrite(PIN_ELECTROMAGNET, LOW); // Soltamos el pendulo
-  unsigned long startTime = micros();   // Tiempo inicial (microsegundos)
-  unsigned long endTime;
-
-  // 3. Esperar a que el sensor detecte la esfera
-  //    Nos quedamos en este bucle hasta que la lectura supere el umbral
-  while (analogRead(PIN_SENSOR_IR) < SENSOR_THRESHOLD)
-  {
-    // Opcional: Timeout por si la esfera nunca cae
-    if (micros() - startTime > 2000000) // 2 segundos
-    {
-      Serial.println("Error: Timeout. La esfera no fue detectada.");
-      return 0.0;
-    }
-  }
-
-  // 4. La esfera fue detectada, tomar el tiempo final
-  endTime = micros();
-  Serial.println("¡Esfera detectada!");
-
-  // 5. Calcular el tiempo y la gravedad
-  time_s = (endTime - startTime) / 1000000.0; // Convertir micros a segundos (flotante)
-  g_result = (2.0 * FALL_HEIGHT_METERS) / (time_s * time_s);
-
-  Serial.print("Tiempo de caída (s): ");
-  Serial.println(time_s, 6); // Imprimir con 6 decimales
-  Serial.print("Gravedad calculada (m/s^2): ");
-  Serial.println(g_result);
-  Serial.println("----------------------------------------");
-
-  return g_result;
-}
-
-/**
- * @brief Mueve el motor para posicionar el péndulo en el ángulo deseado.
- * @param angle El ángulo (10, 15, 20) seleccionado por el usuario.
- */
 void position_at_angle(int angle)
 {
-  // Esta es la función donde el motor desde el sensor IR hasta el ángulo seleccionado.
-  // SIN SENSORES DE ÁNGULO
-
   Serial.print("Posicionando motor en ángulo: ");
   Serial.println(angle);
-
-  // Asumimos que el electroimán YA está encendido (desde STATE_IDLE + Spacebar)
-  // Lógica: Moverse por un tiempo basado en el ángulo
   // TODO: Calibrar este tiempo según tu sistema
   int time_to_move_ms = angle * 100; // Ej: 100ms por grado desde el centro
-
   move_motor(MOTOR_FORWARD);
   delay(time_to_move_ms);
   move_motor(MOTOR_STOP);
-
   Serial.println("Péndulo en posición. Listo para soltar.");
   delay(1000); // Dar tiempo a que el péndulo se estabilice
 }
 
-/**
- * @brief Realiza la medición de oscilación del péndulo.
- * @return El valor de 'g' calculado en m/s^2.
- */
-double perform_measurement()
+// --- FUNCIONES DE MEDICIÓN ---
+
+double perform_pendulum_measurement()
 {
-  double total_time_s, avg_period_T, g_result;
+  double total_time_s, avg_period_T;
   int pass_count = 0;
   bool sensor_state = false;
   bool current_reading = false;
 
   Serial.println("--- Iniciando Medición de Péndulo ---");
 
-  // 1. Verificar que el sensor esté despejado (por si acaso)
+  // 1. Verificar que el sensor esté despejado
   Serial.println("Verificando sensor...");
+  unsigned long wait_start = millis();
   while (analogRead(PIN_SENSOR_IR) > SENSOR_THRESHOLD)
   {
-    // Esperar a que el péndulo no esté en el sensor
+    if (millis() - wait_start > 5000) // 5s timeout
+    {
+      Serial.println("Error: Sensor bloqueado. Abortando.");
+      return 0.0;
+    }
   }
   Serial.println("Sensor despejado.");
 
@@ -508,53 +433,85 @@ double perform_measurement()
   Serial.println("¡Péndulo suelto! Iniciando medición...");
 
   // 3. Esperar a que el péndulo entre al sensor por primera vez
+  wait_start = millis();
   while (analogRead(PIN_SENSOR_IR) < SENSOR_THRESHOLD)
   {
-    // Esperar al primer pase
+    if (millis() - wait_start > 5000) // 5s timeout
+    {
+      Serial.println("Error: Péndulo no detectado. Abortando.");
+      return 0.0;
+    }
   }
 
   // 4. Iniciar el cronómetro y contar N periodos (N*2 pases por el sensor)
   unsigned long startTime = micros();
   pass_count = 0;
   sensor_state = true; // Empezamos DENTRO del sensor
-
-  // Contamos N periodos, lo que significa N*2 pases por el sensor
   int passes_to_count = NUM_PERIODS_TO_MEASURE * 2;
 
   while (pass_count < passes_to_count)
   {
     current_reading = (analogRead(PIN_SENSOR_IR) > SENSOR_THRESHOLD);
 
-    if (current_reading != sensor_state) // Si el estado cambió
+    if (current_reading != sensor_state)
     {
       if (current_reading == true) // Acaba de entrar al sensor (LOW -> HIGH)
       {
         pass_count++;
-        Serial.print("Pase: ");
-        Serial.println(pass_count);
       }
-      sensor_state = current_reading; // Actualizar el estado
+      sensor_state = current_reading;
     }
-    // Pequeña pausa para evitar "rebotar" en el sensor
-    delayMicroseconds(500);
+
+    if (micros() - startTime > 60000000) // 60 segundos
+    {
+      Serial.println("Error: Medición demasiado larga. Abortando.");
+      return 0.0;
+    }
+    delayMicroseconds(500); // Evitar "rebotes" (debounce)
   }
 
   // 5. Detener el cronómetro después del último pase
   unsigned long endTime = micros();
   Serial.println("Medición completada.");
 
-  // 6. Calcular el tiempo y la gravedad
+  // 6. Calcular y devolver el período promedio
   total_time_s = (endTime - startTime) / 1000000.0;
-  avg_period_T = total_time_s / (double)NUM_PERIODS_TO_MEASURE; // Tiempo total / N oscilaciones
-  g_result = (4.0 * M_PI * M_PI * PENDULUM_LENGTH_METERS) / (avg_period_T * avg_period_T);
+  avg_period_T = total_time_s / (double)NUM_PERIODS_TO_MEASURE;
 
   Serial.print("Tiempo total (s): ");
   Serial.println(total_time_s, 6);
   Serial.print("Periodo Promedio (T) (s): ");
   Serial.println(avg_period_T, 6);
-  Serial.print("Gravedad calculada (m/s^2): ");
-  Serial.println(g_result);
-  Serial.println("----------------------------------------");
 
-  return g_result;
+  return avg_period_T;
+}
+
+/**
+ * @brief (NUEVA) Calcula el factor de corrección para ángulos grandes.
+ * @param angle_deg El ángulo de soltura en GRADOS.
+ * @return El factor de corrección (ej. 1.0043 para 15 grados).
+ */
+double calculate_large_angle_correction(int angle_deg)
+{
+  // Convertir el ángulo de soltura a radianes
+  double theta_0 = angle_deg * (M_PI / 180.0);
+
+  // Usar los primeros 3 términos de la serie para precisión
+  double term1 = 1.0;
+  double term2 = (1.0 / 16.0) * pow(theta_0, 2);
+  double term3 = (11.0 / 3072.0) * pow(theta_0, 4);
+
+  return term1 + term2 + term3;
+}
+
+/**
+ * @brief Calcula el período ideal (T_0) para un péndulo de ángulo pequeño.
+ * @param length_m La longitud del péndulo en metros.
+ * @param gravity_m_s2 El valor de gravedad estándar (ej. 9.80665).
+ * @return El período teórico T_0 en segundos.
+ */
+double calculate_T0_small_angle(double length_m, double gravity_m_s2)
+{
+  // Fórmula del péndulo simple: T_0 = 2 * PI * sqrt(L / g)
+  return 2.0 * M_PI * sqrt(length_m / gravity_m_s2);
 }
