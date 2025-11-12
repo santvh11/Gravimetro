@@ -15,21 +15,24 @@
 #define NEXTION_BAUD 9600     // Velocidad confirmada: 9600
 
 // --- DEFINICIONES DE PÁGINAS (Mejora de legibilidad) ---
-#define PAGE_HOME 0           // Página inicial
-#define PAGE_POSITIONING 1    // Página "Posicionando..."
-#define PAGE_SELECT_ANGLE 2   // Página de selección de ángulo
-#define PAGE_READY 3          // Página "Listo para soltar"
-#define PAGE_CALCULATING 4    // Página "Calculando..."
+#define PAGE_HOME 0           // Página inicial`
+#define PAGE_POSITIONING 1    // Página de posicionamiento del péndulo en el ángulo inicial
+#define PAGE_COMPLETED 2      // Página de posicionamiento del pendulo completado
+#define PAGE_CALCULATING 3    // Página de calculando 'g'
+#define PAGE_INFO 4           // Página de información y para ir a resultados
 #define PAGE_DISPLAY_RESULT 5 // Página de resultados
+#define PAGE_ERROR 6          // Página de error
 
 // --- ESTADOS DE LA MÁQUINA ---
 enum State
 {
-  STATE_IDLE,            // Esperando a Iniciar
-  STATE_POSITIONING,     // Posicionando el pendulo
-  STATE_SELECTING_ANGLE, // Esperando a que el usuario seleccione el angulo correspondiente y ejecute
-  STATE_CALCULATING,     // Soltar el pendulo y calculando g
-  STATE_DISPLAY          // Mostrando resultado en Nextion
+  STATE_IDLE,        // Esperando a Iniciar
+  STATE_POSITIONING, // Posicionando el pendulo
+  STATE_COMPLETED,   // Esperando a que el usuario seleccione el angulo correspondiente y ejecute
+  STATE_CALCULATING, // Soltar el pendulo y calculando g
+  STATE_INFO,        // Mostrando info y esperando para ir a resultados
+  STATE_DISPLAY,     // Mostrando resultado en Nextion
+  STATE_ERROR        // Estado de error
 };
 
 State currentState = STATE_IDLE;
@@ -38,9 +41,9 @@ State lastState = STATE_IDLE; // Variable para evitar "spam" en el Serial Monito
 // --- Definiciones de control del motor ---
 enum MotorDirection
 {
+  RIGHT,
+  LEFT,
   MOTOR_STOP,
-  MOTOR_FORWARD,
-  MOTOR_REVERSE
 };
 
 // --- VARIABLES GLOBALES Y PPINES ---
@@ -64,6 +67,7 @@ const int PIN_MOTOR_DIR1 = 3;
 const int PIN_MOTOR_DIR2 = 2;
 const int PIN_ELECTROMAGNET = 24;
 const int PIN_SENSOR_IR = A0;
+const int PIN_ANGLE_SENSOR_IR = A1;
 
 // --- e.  Constantes medición ---
 const int NUM_PERIODS_TO_MEASURE = 10; // Número de oscilaciones a promediar
@@ -77,6 +81,9 @@ const double PENDULUM_LENGTH_METERS = 0.1732;
 // UMBRAL de detección del sensor IR
 // Reposo (despejado) = > 535. Activo (bloqueado) = < 535.
 int SENSOR_THRESHOLD = 535;
+
+// TODO: CALIBRAR!!
+int ANGLE_SENSOR_THRESHOLD = 535; // Umbral para el sensor de ángulo inicial
 
 // --- f. Variables de medición ---
 int selectedAngle = 15; // Ángulo por defecto
@@ -135,6 +142,7 @@ void setup()
   pinMode(PIN_MOTOR_DIR2, OUTPUT);
   pinMode(PIN_ELECTROMAGNET, OUTPUT);
   pinMode(PIN_SENSOR_IR, INPUT);
+  pinMode(PIN_ANGLE_SENSOR_IR, INPUT);
 
   // 4. Asegurarse que todo esté apagado al inicio
   move_motor(MOTOR_STOP);
@@ -179,39 +187,32 @@ void loop()
     break;
 
   case STATE_POSITIONING:
-    // Llama a las funciones (de placeholder) para mover el motor
-    find_pendulm();
-    center_motor();
-    Serial.println("Posicionamiento completado.");
-    goto_next_page(); // Ir a la página de selección de ángulo (PAGE_SELECT_ANGLE)
-    currentState = STATE_SELECTING_ANGLE;
+    // No hacer nada, esperar al teclado
     break;
 
-  case STATE_SELECTING_ANGLE:
+  case STATE_COMPLETED:
     // No hacer nada, esperar al teclado
     break;
 
   case STATE_CALCULATING:
-    // 1. Mover el péndulo a la posición del ángulo seleccionado
-    position_at_angle(selectedAngle);
 
-    // 2. Realizar la medición (soltar, medir periodos)
+    // 1. Realizar la medición (soltar, medir periodos)
     T_medido = perform_pendulum_measurement();
 
     if (T_medido > 0.0) // Revisión de éxito (devuelve 0.0 en error)
     {
-      // 3. Calcular el factor de corrección para el ángulo usado
+      // 2. Calcular el factor de corrección para el ángulo usado
       double correction_factor = calculate_large_angle_correction(selectedAngle);
 
-      // 4. Calcular 'g' USANDO LA FÓRMULA EXACTA
+      // 3. Calcular 'g' USANDO LA FÓRMULA EXACTA
       // g = (4 * pi^2 * L * C^2) / T_med^2
       g_calculado = (4.0 * M_PI * M_PI * PENDULUM_LENGTH_METERS * pow(correction_factor, 2)) / (T_medido * T_medido);
 
-      // 5. Calcular valores teóricos para comparar
+      // 4. Calcular valores teóricos para comparar
       T_0_ideal = calculate_T0_small_angle(PENDULUM_LENGTH_METERS, G_STANDARD);
       T_esperado = T_0_ideal * correction_factor; // El período que esperábamos medir
 
-      // 6. Imprimir datos de depuración al Monitor Serial
+      // 5. Imprimir datos de depuración al Monitor Serial
       Serial.println("------ Resumen de Períodos (Depuración) ------");
       Serial.print("Periodo Esperado (T_esp): ");
       Serial.print(T_esperado, 6);
@@ -221,21 +222,33 @@ void loop()
       Serial.println(" s");
       Serial.println("-------------------------------------------------");
 
-      // 7. Enviar 'g' a la pantalla Nextion
-      set_grav_nextion(g_calculado);
+      // 6. Ir a la página de información
+      currentState = STATE_INFO;
+      goto_next_page();
     }
     else
     {
       // Hubo un error en la medición (timeout)
       Serial.println("Error de medición. Enviando 0.0 a Nextion.");
-      set_grav_nextion(0.0);
+      goto_error_page();
+      currentState = STATE_ERROR;
     }
 
-    currentState = STATE_DISPLAY;
+    break;
+
+  case STATE_INFO:
+    // No hacer nada, esperar al teclado
     break;
 
   case STATE_DISPLAY:
     // No hacer nada, esperar al teclado
+    break;
+
+  case STATE_ERROR:
+    // No hacer nada, esperar al teclado
+    break;
+
+  default:
     break;
   }
   delay(5); // Pequeña pausa para estabilizar el bucle
@@ -257,13 +270,17 @@ void KbdRptParser::OnKeyDown(uint8_t mod, uint8_t key)
       currentState = STATE_POSITIONING;
       break;
 
-    case STATE_SELECTING_ANGLE:
-      // Confirmar: Si estamos en pág "Listo", ir a "Calculando" y cambiar estado
-      if (currentPage == PAGE_READY)
-      {
-        goto_next_page(); // Ir a la pág 4 (PAGE_CALCULATING)
-        currentState = STATE_CALCULATING;
-      }
+    case STATE_COMPLETED:
+      // Ir a pág "Calculando" y cambiar estado
+      goto_next_page(); // Ir a la pág 3 (PAGE_CALCULATING)
+      currentState = STATE_CALCULATING;
+      break;
+
+    case STATE_INFO:
+      // Ir a pág "Resultados" y cambiar estado
+      set_grav_nextion((float)g_calculado); // Enviar resultado a Nextion
+      goto_next_page();                     // Ir a la pág 5 (PAGE_DISPLAY_RESULT)
+      currentState = STATE_DISPLAY;
       break;
 
     case STATE_DISPLAY:
@@ -271,35 +288,84 @@ void KbdRptParser::OnKeyDown(uint8_t mod, uint8_t key)
       goto_next_page(); // Volver a la página 0 (PAGE_HOME)
       currentState = STATE_IDLE;
       break;
+
+    case STATE_ERROR:
+      // Reset desde error: Volver a la página de posicionamiento y cambiar estado
+      goto_next_page(); // Ir a pág 1 (PAGE_POSITIONING)
+      currentState = STATE_POSITIONING;
+      break;
     }
     return;
   }
 
-  // Lógica de selección de ángulo
-  if (currentPage == PAGE_SELECT_ANGLE)
+  // Lógica de posicionamiento del péndulo en el ángulo inicial
+  if (currentPage == PAGE_POSITIONING)
   {
     switch (key)
     {
     case KEY_A:
-      selectAngleAndAdvance(5);
+      move_magnet(LEFT);
+      check_initial_position();
       break;
-    case KEY_S:
-      selectAngleAndAdvance(10);
-      break;
+
     case KEY_D:
-      selectAngleAndAdvance(15);
+      move_magnet(RIGHT);
+      check_initial_position();
       break;
     default:
-      Serial.println("Error: Presione A (5), S (10), D (15).");
+      Serial.println("Error: Presione A para ir a la izquierda o D para la derecha.");
       break;
     }
     return;
   }
 }
 
+// --- FUNCIONES DE POSICIONAMIENTO DEL PÉNDULO ---
+
+void check_initial_position()
+{
+  // codigo para chequear la si el pendulo esta en el sensor del angulo inicial
+  if (check_angle_sensor())
+  {
+    Serial.println("Péndulo en posición inicial correcta.");
+    goto_next_page(); // Avanzar a la página de listo (PAGE_READY)
+  }
+}
+
+void check_angle_sensor()
+{
+  // Lógica de placeholder: Leer el sensor IR para el ángulo inicial
+  int sensor_value = analogRead(PIN_ANGLE_SENSOR_IR);
+  Serial.print("Valor del sensor de ángulo inicial: ");
+  Serial.println(sensor_value);
+
+  // Suponemos que si el valor es menor al umbral, está en posición
+  if (sensor_value < ANGLE_SENSOR_THRESHOLD)
+  {
+    return true; // En posición
+  }
+  return false; // No en posición
+}
+
+void magnet_move(int direction)
+{
+  if (direction == RIGHT)
+  {
+    Serial.println("Moviendo electroimán a la derecha...");
+    move_motor(RIGHT);
+  }
+  else
+  {
+    Serial.println("Moviendo electroimán a la izquierda...");
+    move_motor(LEFT);
+  }
+  delay(500); // CALIBRAR
+  move_motor(MOTOR_STOP);
+}
+
 // --- FUNCIONES DE NEXTION ---
 
-void selectAngleAndAdvance(int angle)
+/* void selectAngleAndAdvance(int angle)
 {
   Serial.print("Teclado: Ángulo seleccionado: ");
   Serial.println(angle);
@@ -307,7 +373,7 @@ void selectAngleAndAdvance(int angle)
   function_UpdateNextionUI_Angle(selectedAngle);
   goto_next_page(); // Avanza a la página 3 (PAGE_READY)
 }
-
+ */
 /**
  * @brief Actualiza el objeto de gravedad en la pantalla Nextion.
  * @param g El valor de 'g' calculado.
@@ -336,6 +402,15 @@ void goto_next_page()
   sendNextionEnd();
 }
 
+void goto_error_page()
+{
+  Serial.println("Enviando a página de error en Nextion...");
+  nextionSerial.print("page ");
+  nextionSerial.print(PAGE_ERROR);
+  sendNextionEnd();
+  currentPage = PAGE_ERROR;
+}
+
 void sendNextionEnd()
 {
   nextionSerial.write(0xFF);
@@ -355,32 +430,15 @@ void function_UpdateNextionUI_Angle(int angle)
 
 // --- FUNCIONES DEL MOTOR ---
 
-// -----------------------------------------------------------------
-// TODO: ¡CALIBRACIÓN #2 CRÍTICA!
-// Las siguientes 3 funciones son placeholders.
-// Debes reemplazar los 'delay()' con lógica de tiempo calibrada
-// o, idealmente, con la lectura de sensores de fin de carrera.
-// -----------------------------------------------------------------
-
-void find_pendulm()
-{
-  // Lógica de EJEMPLO: Moverse a un extremo
-  Serial.println("Buscando péndulo (Moviendo FORWARD 2 seg)...");
-  move_motor(MOTOR_FORWARD);
-  delay(2000); // ¡REEMPLAZAR!
-  move_motor(MOTOR_STOP);
-  Serial.println("...Péndulo encontrado.");
-}
-
 void move_motor(int direction)
 {
   switch (direction)
   {
-  case MOTOR_FORWARD:
+  case RIGHT:
     digitalWrite(PIN_MOTOR_DIR1, HIGH);
     digitalWrite(PIN_MOTOR_DIR2, LOW);
     break;
-  case MOTOR_REVERSE:
+  case LEFT:
     digitalWrite(PIN_MOTOR_DIR1, LOW);
     digitalWrite(PIN_MOTOR_DIR2, HIGH);
     break;
@@ -390,32 +448,6 @@ void move_motor(int direction)
     digitalWrite(PIN_MOTOR_DIR2, LOW);
     break;
   }
-}
-
-void center_motor()
-{
-  // Lógica de EJEMPLO: Moverse al centro
-  Serial.println("Centrando motor (Moviendo REVERSE 2 seg)...");
-  move_motor(MOTOR_REVERSE);
-  delay(2000); // ¡REEMPLAZAR!
-  move_motor(MOTOR_STOP);
-  Serial.println("...Motor centrado (supuestamente).");
-}
-
-void position_at_angle(int angle)
-{
-  // Lógica de EJEMPLO: Moverse al ángulo
-  Serial.print("Posicionando motor en ángulo: ");
-  Serial.println(angle);
-  // Fórmula de placeholder: 100ms por grado
-  int time_to_move_ms = angle * 100; // ¡REEMPLAZAR/CALIBRAR!
-
-  move_motor(MOTOR_FORWARD);
-  delay(time_to_move_ms);
-  move_motor(MOTOR_STOP);
-
-  Serial.println("Péndulo en posición. Listo para soltar.");
-  delay(1000); // Dar tiempo a que el péndulo se estabilice
 }
 
 // --- FUNCIONES DE MEDICIÓN ---
