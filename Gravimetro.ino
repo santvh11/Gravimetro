@@ -270,6 +270,13 @@ void KbdRptParser::OnKeyDown(uint8_t mod, uint8_t key)
       currentState = STATE_POSITIONING;
       break;
 
+    // TODO: Borrar todo este estado de posicionamiento manual
+    case STATE_POSITIONING:
+      // Ir a pág "Posicionamiento completado" y cambiar estado
+      goto_next_page(); // Ir a la pág 2 (PAGE_COMPLETED)
+      currentState = STATE_COMPLETED;
+      break;
+
     case STATE_COMPLETED:
       // Ir a pág "Calculando" y cambiar estado
       goto_next_page(); // Ir a la pág 3 (PAGE_CALCULATING)
