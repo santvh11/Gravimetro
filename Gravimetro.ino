@@ -116,6 +116,9 @@ double perform_pendulum_measurement();
 void position_at_angle(int angle);
 double calculate_T0_small_angle(double length_m, double gravity_m_s2);
 double calculate_large_angle_correction(int angle_deg);
+void check_initial_position();
+bool check_angle_sensor();
+
 
 // --- CONFIGURACIÓN ---
 void setup()
@@ -339,7 +342,7 @@ void check_initial_position()
   }
 }
 
-void check_angle_sensor()
+bool check_angle_sensor()
 {
   // Lógica de placeholder: Leer el sensor IR para el ángulo inicial
   int sensor_value = analogRead(PIN_ANGLE_SENSOR_IR);
@@ -354,7 +357,7 @@ void check_angle_sensor()
   return false; // No en posición
 }
 
-void magnet_move(int direction)
+void move_magnet(int direction)
 {
   if (direction == RIGHT)
   {
